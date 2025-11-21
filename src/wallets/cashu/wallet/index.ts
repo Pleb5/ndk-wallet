@@ -638,7 +638,7 @@ export class NDKCashuWallet extends NDKWallet {
      * different to the one of this wallet, the restored proofs get spendable in this wallet, but not backed up by this wallet's seed.
      * 
      * @param bip39seed the seed to restore from
-     * @param mint the mint to be used
+     * @param mint the mint to be used, it must be a mint of this wallet. The method throws an error otherwise.
      * @param options object containing options to customize the restore process.
      *  - @param gapLimit The amount of empty counters that should be returned before restoring ends (defaults to 300). Default is 300
      *  - @param batchSize The amount of proofs that should be restored at a time (defaults to 100). Default is 100
@@ -647,6 +647,8 @@ export class NDKCashuWallet extends NDKWallet {
      * @returns An object with the errors, if any, and the proofs recovered.
      */
     public async recoverProofsFromSeed(bip39seed: Uint8Array, mint: string, options: RestoreWalletOpts = {}): Promise<{ errors: any[], proofs: Proof[] }> {
+        if (!this.mints.includes(mint)) throw new Error("Recovering a wallet is only available for mints of this wallet");
+
         const { gapLimit, batchSize, startCounter, activeKeysets } = options;
         var cashuWallet;
         try {
@@ -677,14 +679,6 @@ export class NDKCashuWallet extends NDKWallet {
             for (const keyset of keysets) {
                 try {
                     const { proofs, lastCounterWithSignature } = await cashuWallet.batchRestore(gapLimit, batchSize, startCounter, keyset.id);
-                    for (const proof of proofs) {
-                        this.state.addProof({
-                            mint,
-                            proof,
-                            state: 'available',
-                            timestamp: Date.now()
-                        })
-                    }
                     resultProofs = resultProofs.concat(proofs);
                     try {
                         // when restoring this wallet update counters if needed
@@ -704,12 +698,13 @@ export class NDKCashuWallet extends NDKWallet {
                 }
             }
             if (resultProofs.length) {
-                // proofs received from mint can be already spent
+                // Proofs received from mint can be already spent. Consolidate and update wallet state.
                 try {
                     const consolidated = await consolidateMintTokens(mint, this, resultProofs);
                     if (consolidated && consolidated.created) {
-                        // when available return consolidated proofs
                         resultProofs = consolidated.created.proofs;
+                    } else {
+                        resultProofs = [];
                     }
                 } catch (e) {
                     console.error(`Error consolidating proofs for mint ${mint}, some restored proofs maybe already spent.`);
