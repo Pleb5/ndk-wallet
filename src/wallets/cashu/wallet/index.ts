@@ -673,47 +673,50 @@ export class NDKCashuWallet extends NDKWallet {
 
         let resultProofs: Proof[] = [];
         let aggregatedErrors = [];
-        try {
-            const mintKeysets = await cashuWallet.mint.getKeySets();
-            const keysets = activeKeysets ? mintKeysets.keysets.filter(ks => ks.active) : mintKeysets.keysets;
-            for (const keyset of keysets) {
-                try {
-                    const { proofs, lastCounterWithSignature } = await cashuWallet.batchRestore(gapLimit, batchSize, startCounter, keyset.id);
+        const mintKeysets = await cashuWallet.mint.getKeySets();
+        const keysets = activeKeysets ? mintKeysets.keysets.filter(ks => ks.active) : mintKeysets.keysets;
+        for (const keyset of keysets) {
+            try {
+                const { proofs, lastCounterWithSignature } = await cashuWallet.batchRestore(gapLimit, batchSize, startCounter, keyset.id);
+                if (proofs.length) {
+                    await this.state.update(
+                    {
+                        mint: mint,
+                        store: proofs
+                    },
+                    "Restored");
                     resultProofs = resultProofs.concat(proofs);
-                    try {
-                        // when restoring this wallet update counters if needed
-                        if (bip39seed === this._bip39seed && proofs.length) {
-                            const counterEntry = await this.state.getCounterEntryFor(cashuWallet.mint);
-                            const currentCounter = counterEntry.counter ?? 0;
-                            const counterIncrement = lastCounterWithSignature && lastCounterWithSignature > currentCounter ? lastCounterWithSignature - currentCounter : 0;
-                            this.incrementDeterministicCounter(counterEntry.counterKey, counterIncrement);
-                        }
-                    } catch (e) {
-                        console.error(`Error ${e} updating counter state in relays after restore for mint ${mint} and keyset ${keyset.id}. Continue with next keyset...`);
-                        aggregatedErrors.push(e);
-                    }
-                } catch (e) {
-                    console.error(`Error ${e} restoring proofs for mint ${mint} and keyset ${keyset.id}. Continue with next keyset...`);
-                    aggregatedErrors.push(e);
                 }
-            }
-            if (resultProofs.length) {
-                // Proofs received from mint can be already spent. Consolidate and update wallet state.
                 try {
-                    const consolidated = await consolidateMintTokens(mint, this, resultProofs);
-                    if (consolidated && consolidated.created) {
-                        resultProofs = consolidated.created.proofs;
-                    } else {
-                        resultProofs = [];
+                    // when restoring this wallet update counters if needed
+                    if (bip39seed === this._bip39seed && proofs.length) {
+                        const counterEntry = await this.state.getCounterEntryFor(cashuWallet.mint);
+                        const currentCounter = counterEntry.counter ?? 0;
+                        const counterIncrement = lastCounterWithSignature && lastCounterWithSignature > currentCounter ? lastCounterWithSignature - currentCounter : 0;
+                        this.incrementDeterministicCounter(counterEntry.counterKey, counterIncrement);
                     }
                 } catch (e) {
-                    console.error(`Error consolidating proofs for mint ${mint}, some restored proofs maybe already spent.`);
+                    console.error(`Error ${e} updating counter state in relays after restore for mint ${mint} and keyset ${keyset.id}. Continue with next keyset...`);
                     aggregatedErrors.push(e);
                 }
+            } catch (e) {
+                console.error(`Error ${e} restoring proofs for mint ${mint} and keyset ${keyset.id}. Continue with next keyset...`);
+                aggregatedErrors.push(e);
             }
-        } catch (e) {
-            throw new Error(`Error ${e} getting keysets for mint ${mint}.`);
         }
+        if (resultProofs.length) {
+            // Proofs received from mint can be already spent. Consolidate and update wallet state.
+            try {
+                const consolidated = await consolidateMintTokens(mint, this, resultProofs);
+                if (consolidated && consolidated.created) {
+                    resultProofs = consolidated.created.proofs;
+                }
+            } catch (e) {
+                console.error(`Error ${e} consolidating proofs for mint ${mint}, some restored proofs maybe already spent.`);
+                aggregatedErrors.push(e);
+            }
+        }
+
         return { errors: aggregatedErrors, proofs: resultProofs };
     }
 
