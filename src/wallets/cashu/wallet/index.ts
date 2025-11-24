@@ -381,9 +381,14 @@ export class NDKCashuWallet extends NDKWallet {
             await this.event.encrypt(user, undefined, "nip44");
         }
         const eventPromise = this.event.publishReplaceable(this.relaySet);
-        const deterministicWalletPromise = this.publishDeterministicInfo(this.relaySet);
-        const resultPromise = Promise.all([eventPromise, deterministicWalletPromise]);
-        return resultPromise.then(r => r[0].intersection(r[1]));
+        let resultPromise;
+        if (this._bip39seed) {
+            const deterministicWalletPromise = this.publishDeterministicInfo(this.relaySet);
+            resultPromise = Promise.all([eventPromise, deterministicWalletPromise]).then(r => r[0].intersection(r[1]));
+        } else {
+            resultPromise = eventPromise;
+        }
+        return resultPromise;
     }
 
     public async incrementDeterministicCounter(counterKey: string, counterIncrement: number, tries: number = 3) {
