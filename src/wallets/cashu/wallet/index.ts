@@ -727,25 +727,24 @@ export class NDKCashuWallet extends NDKWallet {
         return { errors: aggregatedErrors, proofs: resultProofs };
     }
 
+    /**
+     * Transfers all the funds from one wallet to another. All the mints having a positive amount must be a mint of the receiving wallet, otherwise an error is thrown.
+     * @param receivingNDKWallet the wallet receiving the funds. This wallet must not be a deterministic one.
+     * @returns true if the funds are secured by deterministic secrets after the transfer.
+     */
     public async transferAllFundsTo(receivingNDKWallet: NDKCashuWallet): Promise<boolean> {
         await this.consolidateTokens();
         const mintBalances = this.mintBalances;
-        let deterministicTransfer = true;
+        let deterministicTransfer = !!receivingNDKWallet._bip39seed;
         for (const mint of Object.keys(mintBalances)) {
+            if (!receivingNDKWallet.mints.includes(mint)) {
+                throw new Error(`Precondition violated: every sending mint (${mint}) must be a mint of the receiving wallet too!`);
+            }
             const proofs = this.state.getProofs({ mint: mint, onlyAvailable: true });
             if (proofs.length) {
                 let receivedProofs: Proof[];
                 try {
-                    /* const sendingWallet = await this.getCashuWallet(mint, this.bip39seed);
-                    // Send
-                    let currentCounterEntry = await this.state.getCounterEntryFor(sendingWallet.mint);
-                    let counter = this._bip39seed ? currentCounterEntry.counter ?? 0 : undefined;
-                    const sendRes = await sendingWallet.send(mintBalances[mint], proofs, { includeFees: true, counter });
-                    if (this._bip39seed && sendRes.keep.length) {
-                        await this.incrementDeterministicCounter(currentCounterEntry.counterKey, sendRes.keep.length);
-                    } */
-                    // Receive
-                    const token = getEncodedTokenV4({ mint, proofs });//: sendRes.send });
+                    const token = getEncodedTokenV4({ mint, proofs });
                     const receivingWallet = await receivingNDKWallet.getCashuWallet(mint, receivingNDKWallet.bip39seed);
                     const currentCounterEntry = await receivingNDKWallet.state.getCounterEntryFor(receivingWallet.mint);
                     const counter = receivingNDKWallet._bip39seed ? currentCounterEntry.counter ?? 0 : undefined;
