@@ -56,6 +56,11 @@ export type RestoreWalletOpts = {
     activeKeysets?: boolean
 }
 
+export type RecoverResult = {
+    unspent?: Proof[],
+    spent?: string[]
+}
+
 /**
  * This class tracks state of a NIP-60 wallet
  */
@@ -651,9 +656,10 @@ export class NDKCashuWallet extends NDKWallet {
      *  - @param batchSize The amount of proofs that should be restored at a time (defaults to 100). Default is 100
      *  - @param startCounter The counter that should be used as a starting point (defaults to 0). Default is 0
      *  - @param activeKeysets If true only active keysets will be restored. Default is false.
-     * @returns An object with the errors, if any, and the proofs recovered.
+     * @returns An object with the errors, if any, and the RecoverResult containing unspent and spent recovered proofs, if any were recovered.
      */
-    public async recoverProofsFromSeed(bip39seed: Uint8Array, mint: string, options: RestoreWalletOpts = {}): Promise<{ errors: any[], proofs: Proof[] }> {
+    public async recoverProofsFromSeed(bip39seed: Uint8Array, mint: string, options: RestoreWalletOpts = {})
+        : Promise<{ errors: any[], recoverResult: RecoverResult }> {
         if (!this.mints.includes(mint)) throw new Error("Recovering a wallet is only available for mints of this wallet");
 
         const { gapLimit, batchSize, startCounter, activeKeysets } = options;
@@ -699,7 +705,8 @@ export class NDKCashuWallet extends NDKWallet {
                     if (bip39seed === this._bip39seed && proofs.length) {
                         const counterEntry = await this.state.getCounterEntryFor(cashuWallet.mint);
                         const currentCounter = counterEntry.counter ?? 0;
-                        const counterIncrement = lastCounterWithSignature && lastCounterWithSignature > currentCounter ? lastCounterWithSignature - currentCounter : 0;
+                        const counterIncrement = lastCounterWithSignature && lastCounterWithSignature + 1 > currentCounter ?
+                            lastCounterWithSignature - currentCounter + 1 : 0;
                         this.incrementDeterministicCounter(counterEntry.counterKey, counterIncrement);
                     }
                 } catch (e) {
@@ -711,14 +718,20 @@ export class NDKCashuWallet extends NDKWallet {
                 aggregatedErrors.push(e);
             }
         }
+        let recoverResult = {};
         if (resultProofs.length) {
             // Proofs received from mint can be already spent. Consolidate and update wallet state.
             try {
-                const consolidated = await consolidateMintTokens(mint, this, resultProofs);
-                if (consolidated && consolidated.created) {
-                    resultProofs = consolidated.created.proofs;
+                const consolidationResult = await consolidateMintTokens(mint, this, resultProofs);
+                if (!consolidationResult) {
+                    recoverResult = {
+                        unspent: resultProofs
+                    }
                 } else {
-                    resultProofs = [];
+                    recoverResult = {
+                        unspent: consolidationResult.created?.proofs.concat(consolidationResult.reserved?.proofs ?? []),
+                        spent: consolidationResult.deleted
+                    }
                 }
             } catch (e) {
                 console.error(`Error ${e} consolidating proofs for mint ${mint}, some restored proofs maybe already spent.`);
@@ -726,7 +739,7 @@ export class NDKCashuWallet extends NDKWallet {
             }
         }
 
-        return { errors: aggregatedErrors, proofs: resultProofs };
+        return { errors: aggregatedErrors, recoverResult };
     }
 
     public warn(msg: string, event?: NDKEvent, relays?: NDKRelay[]) {
