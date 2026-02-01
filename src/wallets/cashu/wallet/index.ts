@@ -302,8 +302,9 @@ export class NDKCashuWallet extends NDKWallet {
 
         opts ??= {};
         opts.subId ??= "cashu-wallet-state";
+        opts.relaySet ??= this.relaySet;
 
-        this.sub = this.ndk.subscribe(filters, opts, this.relaySet, false);
+        this.sub = this.ndk.subscribe(filters, opts, undefined, false);
 
         this.sub.on("event:dup", eventDupHandler.bind(this));
         this.sub.on("event", eventHandler.bind(this));
@@ -382,14 +383,22 @@ export class NDKCashuWallet extends NDKWallet {
 
         if (!this.isDeleted) {
             this.event.content = JSON.stringify(this.walletPayload());
-            const user = await this.ndk!.signer!.user();
             await this.event.encrypt(user, undefined, "nip44");
         }
-        const eventPromise = this.event.publishReplaceable(this.relaySet);
+        this.event.pubkey = user.pubkey;
+        this.event.created_at = Math.floor(Date.now() / 1000);
+        this.event.id = undefined;
+        this.event.sig = undefined;
+        const eventPromise = this.publishReplaceableWithTimeout(this.event, this.relaySet);
         let resultPromise;
         if (this._bip39seed) {
-            const deterministicWalletPromise = this.publishDeterministicInfo(this.relaySet);
-            resultPromise = Promise.all([eventPromise, deterministicWalletPromise]).then(r => r[0].intersection(r[1]));
+            const deterministicWalletPromise = this.publishDeterministicInfo(this.relaySet).catch((error) => {
+                console.warn("[wallet] publishDeterministicInfo failed during publish", error);
+                return new Set<NDKRelay>();
+            });
+            resultPromise = Promise.all([eventPromise, deterministicWalletPromise]).then(([walletRelays, deterministicRelays]) =>
+                deterministicRelays.size > 0 ? walletRelays.intersection(deterministicRelays) : walletRelays
+            );
         } else {
             resultPromise = eventPromise;
         }
@@ -468,8 +477,11 @@ export class NDKCashuWallet extends NDKWallet {
             counters: newCounters,
         });
 
-        await info.encrypt(user);
-        const relays = await info.publishReplaceable(relaySet);
+        await info.encrypt(user, undefined, "nip44");
+        info.pubkey = user.pubkey;
+        info.created_at = Math.floor(Date.now() / 1000);
+        await info.sign();
+        const relays = await this.publishReplaceableWithTimeout(info, relaySet);
 
         return relays;
     }
@@ -478,15 +490,39 @@ export class NDKCashuWallet extends NDKWallet {
      * Fetch the latest Deterministic Cashu Wallet Info event (kind 17376) for a pubkey.
      * Uses max(created_at) to select the latest without relying on sort order.
      */
-    private async fetchLatestDeterministicInfoEvent(pubkey: string, relaySet?: NDKRelaySet): Promise<NDKEvent | undefined> {
+    private async fetchLatestDeterministicInfoEvent(
+        pubkey: string,
+        relaySet?: NDKRelaySet,
+        timeoutMs = 3000
+    ): Promise<NDKEvent | undefined> {
         const filter: NDKFilter = {
             kinds: [DeterministicCashuWalletInfoKind],
             authors: [pubkey],
             limit: 1,
         };
 
-        const set = await this.ndk.fetchEvents(filter, { cacheUsage: NDKSubscriptionCacheUsage.ONLY_RELAY}, relaySet);
-        if (!set || set.size === 0) return undefined;
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<null>((resolve) => {
+            timeoutId = setTimeout(() => resolve(null), timeoutMs);
+        });
+
+        const set = await Promise.race([
+            this.ndk.fetchEvents(filter, {
+                cacheUsage: NDKSubscriptionCacheUsage.ONLY_RELAY,
+                relaySet,
+            }),
+            timeoutPromise,
+        ]);
+
+        if (timeoutId) clearTimeout(timeoutId);
+        if (!set) {
+            console.warn(
+                `[wallet] Timed out fetching deterministic info after ${timeoutMs}ms`,
+                { pubkey }
+            );
+            return undefined;
+        }
+        if (set.size === 0) return undefined;
 
         const list = Array.from(set.values());
         let latest: NDKEvent | undefined = undefined;

@@ -254,13 +254,13 @@ export class NDKNutzapMonitor
             const usingMockedFetch = fetchEvents !== NDK.prototype.fetchEvents;
 
             if (usingMockedFetch) {
-                backupEvents = await fetchEvents.call(this.ndk, filters, undefined, this.relaySet);
+                backupEvents = await fetchEvents.call(this.ndk, filters, { relaySet: this.relaySet });
             } else {
                 const connectedRelays = this.ndk.pool?.connectedRelays?.() ?? [];
                 if (connectedRelays.length === 0) return;
 
                 backupEvents = await this.withTimeout(
-                    fetchEvents.call(this.ndk, filters, undefined, this.relaySet),
+                    fetchEvents.call(this.ndk, filters, { relaySet: this.relaySet }),
                     timeoutMs
                 );
 
