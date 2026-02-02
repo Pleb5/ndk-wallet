@@ -365,10 +365,10 @@ export class NDKNutzapMonitor
                 ...opts,
             },
             undefined,
-            {
-                onEvent: (event) => this.eventHandler(event),
-            }
+            false
         );
+        this.sub.on("event", (event: NDKEvent) => this.eventHandler(event));
+        this.sub.start();
 
         console.log(`✅ Nutzap monitor started successfully`);
         return true;
