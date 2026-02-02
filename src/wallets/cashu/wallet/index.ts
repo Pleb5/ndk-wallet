@@ -270,7 +270,8 @@ export class NDKCashuWallet extends NDKWallet {
   static async from(
     event: NDKEvent,
     deterministicInfoEvent?: NDKEvent,
-    decryptedContent?: string
+    decryptedContent?: string,
+    decryptedDeterministicContent?: string
   ): Promise<NDKCashuWallet | undefined> {
     const logPrefix = "[wallet:from]";
     console.warn(`${logPrefix} start`, {
@@ -329,8 +330,10 @@ export class NDKCashuWallet extends NDKWallet {
       }
     }
 
+    let deterministicInfo = decryptedDeterministicContent ?? '';
+
     // Try to have deterministic info ready for synchronous getter usage
-    if (deterministicInfoEvent) {
+    if (!deterministicInfo && deterministicInfoEvent) {
       const isNip46Signer = Boolean(
         wallet.ndk.signer?.constructor?.name?.includes("Nip46")
       );
@@ -346,7 +349,7 @@ export class NDKCashuWallet extends NDKWallet {
       let deterministicDecryptOk = false;
       try {
         const timeoutMs =
-          isNip46Signer ? 4000 : 2000;
+          isNip46Signer ? 5000 : 2000;
         console.warn(`${logPrefix} deterministic decrypt start`, {
           timeoutMs,
           signerType: wallet.ndk.signer?.constructor?.name ?? "unknown",
@@ -366,6 +369,7 @@ export class NDKCashuWallet extends NDKWallet {
               ? deterministicInfoEvent.content.length
               : 0,
         });
+        deterministicInfo = deterministicInfoEvent.content
       } catch (e) {
         console.warn("Error decrypting deterministic wallet event, skipping deterministic info.", e);
       }
@@ -374,9 +378,9 @@ export class NDKCashuWallet extends NDKWallet {
       let countersSnapshot: Record<string, number> | undefined;
       let hasDeterministicInfo = false;
 
-      if (deterministicDecryptOk && deterministicInfoEvent.content) {
+      if (deterministicInfo) {
         try {
-          const infoContent = JSON.parse(deterministicInfoEvent.content) as {
+          const infoContent = JSON.parse(deterministicInfo) as {
             bip39seed?: string;
             counters?: Record<string, number>;
           };
@@ -574,11 +578,13 @@ export class NDKCashuWallet extends NDKWallet {
       const payload = JSON.stringify(this.walletPayload());
       this.event.content = payload;
       await this.event.encrypt(user, undefined, "nip44");
+      console.warn("[wallet:publish] wallet event encrypted");
     }
 
     this.event.pubkey = user.pubkey;
     this.event.created_at = Math.floor(Date.now() / 1000);
     await this.event.sign();
+    console.warn("[wallet:publish] wallet event signed");
     const eventPromise = this.publishReplaceableWithTimeout(this.event, this.relaySet);
     let resultPromise;
     if (this._bip39seed) {
@@ -635,12 +641,13 @@ export class NDKCashuWallet extends NDKWallet {
     if (mergeCounters) {
       // Merge with latest remote (per-key max)
       const latestRemote = await this.fetchLatestDeterministicInfoEvent(user.pubkey, relaySet);
+      console.warn('latestRemote: ', latestRemote)
 
       if (latestRemote) {
         try {
           const decrypted = await this.withTimeout(
             latestRemote.decrypt().then(() => true),
-            2000,
+            4000,
             "[wallet] Deterministic info decrypt"
           );
           if (decrypted) {
@@ -648,19 +655,7 @@ export class NDKCashuWallet extends NDKWallet {
             if (isDeterministicCashuWalletInfoContent(parsed)) {
               newCounters = this.mergeCountersMax(newCounters, parsed.counters ?? {});
             }
-          } else {
-            console.warn('could not decrypt latest remote trying in another way')
-            const decrypted = await this.withTimeout(
-              this.ndk!.signer!.decrypt(user, latestRemote.content, 'nip44').then(() => true),
-              2000, "[wallet] Deterministic info direct decryption"
-            )
-            if (decrypted) {
-              console.warn('direct decryption successful!')
-              const parsed = JSON.parse(latestRemote.content);
-              if (isDeterministicCashuWalletInfoContent(parsed)) {
-                newCounters = this.mergeCountersMax(newCounters, parsed.counters ?? {});
-              }
-            }
+            console.warn("[wallet:publish] deterministic info decrypted");
           }
         } catch {
           // ignore decrypt/parse errors and keep local snapshot
@@ -686,27 +681,16 @@ export class NDKCashuWallet extends NDKWallet {
       counters: newCounters,
     });
 
+    console.warn('wallet: deterministic content stringified', info.content)
+
     await info.encrypt(user, undefined, "nip44");
+
     let infoContentLength = info.content?.length ?? 0;
     console.warn('[wallet:publish] deterministic encrypted', {
       scheme: 'nip44',
       contentLength: infoContentLength,
     });
-    if (info.content === "Could not decrypt the message" || infoContentLength < 50) {
-      info.content = JSON.stringify({
-        bip39seed: bytesToHex(seed),
-        counters: newCounters,
-      });
-      await info.encrypt(user, undefined, "nip04");
-      infoContentLength = info.content?.length ?? 0;
-      console.warn('[wallet:publish] deterministic encrypted', {
-        scheme: 'nip04',
-        contentLength: infoContentLength,
-      });
-    }
-    if (info.content === "Could not decrypt the message" || (!info.content?.includes('?iv=') && infoContentLength < 50)) {
-      throw new Error("[wallet:publish] invalid deterministic encrypted content");
-    }
+
     info.pubkey = user.pubkey;
     info.created_at = Math.floor(Date.now() / 1000);
     await info.sign();
